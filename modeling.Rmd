@@ -1,0 +1,125 @@
+---
+title: "Modeling"
+author: "Olabode Anise"
+date: "8/5/2018"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(caret)
+library(car)
+library(mlr)
+library(ada)
+library(kknn)
+library(randomForest)
+library(e1071)
+library(sparklyr)
+set.seed(26)
+```
+
+```{r}
+spark_install(version = "2.1.0")
+sc <- sparklyr::spark_connect(master = "local")
+```
+
+```{r}
+eth_account_data <- collect(spark_read_parquet(sc, "eth_data",
+                                               "data/training_data/featurized/eth-bots/accounts/data"))$data.frame
+genuine_account_data <- collect(spark_read_parquet(sc,"genuine_data" ,
+                                                   "data/training_data/featurized/genuine-accounts/accounts/data"))$data.frame
+social_spam_account_data <- collect(spark_read_parquet(sc, "social_spam_data",                                             "data/training_data/featurized/bots/accounts/data"))$data.frame
+```
+
+```{r}
+# sum of the ethereum bots we collected were only a few hours old
+eth_account_data[which(eth_account_data$account_age_days == 0),]$account_age_days <- 1
+eth_account_data$favorite_rate <- eth_account_data$num_favorites / eth_account_data$account_age_days
+eth_account_data$tweet_rate <- eth_account_data$num_tweets / eth_account_data$account_age_days
+
+# setting target column
+eth_account_data$is_bot <- 1
+genuine_account_data$is_bot <- 0
+social_spam_account_data$is_bot <- 1
+
+```
+
+```{r}
+factor_columns <- c("is_default_profile", "is_protected", "is_geo_enabled", "is_verified", "is_bot")
+add_factors <- function(account_df, columns) {
+  for (c in columns) {
+    account_df[, c] <- as.factor(account_df[, c])
+  }
+  return(account_df)
+}
+
+eth_account_data <- add_factors(eth_account_data, factor_columns)
+genuine_accounts_data <- add_factors(genuine_accounts_data, factor_columns)
+social_spam_bots_data <- add_factors(social_spam_bots_data, factor_columns)
+```
+
+```{r}
+feature_columns <- c("is_verified", "is_default_profile", "is_geo_enabled",
+                                 "ratio_followers_friends", "screen_name_entropy",
+                                 "numbers_at_beginning_of_screen_name", "numbers_at_end_of_screen_name",
+                                 "favorite_rate", "is_protected",  "tweet_rate", "is_bot")
+
+get_feature_data <- function(account_data, training=T, scale=T){
+  feature_columns <- c("is_verified", "is_default_profile", "is_geo_enabled",
+                                 "ratio_followers_friends", "screen_name_entropy",
+                                 "numbers_at_beginning_of_screen_name", "numbers_at_end_of_screen_name",
+                                 "favorite_rate", "is_protected",  "tweet_rate")
+  if(training){
+    feature_columns <- c(feature_columns, "is_bot")
+  }
+  
+  feature_data <- account_data[, feature_columns]
+
+  if(scale){
+    scaled_feature_data <- feature_data
+
+    scaled_feature_data[, -c(1, 2, 3, 9, 11)] <- scale(feature_data[, -c(1, 2, 3, 9, 11)]) 
+    
+    feature_data <- scaled_feature_data
+  }
+  
+  return(feature_data)
+}
+
+eth_feature_data <- get_feature_data(eth_account_data, T, F)
+social_spam_feature_data <- get_feature_data(social_spam_account_data, T, F)
+genuine_account_feature_data <- get_feature_data(genuine_account_data, T, F)
+```
+
+```{r}
+cresci_data <- rbind(genuine_account_feature_data,social_spam_feature_data)
+genuine_and_eth <- rbind(genuine_account_feature_data, eth_feature_data)
+cresci_and_eth <- rbind(cresci_data, eth_feature_data)
+```
+
+```{r}
+cl <- makePSOCKcluster(5)
+registerDoParallel(cl)
+tasks <- list( 
+  makeClassifTask(id="SocialSpam", data=cresci_data, target = "is_bot", positive = "1"),
+  smote(makeClassifTask(id="SocialSpamSmote", data=cresci_data, target = "is_bot", positive = "1"), rate=1.33),
+  makeClassifTask(id="Eth", data=genuine_and_eth, target = "is_bot", positive = "1"),
+  undersample(makeClassifTask(id="EthDownsampled", data=genuine_and_eth, target = "is_bot", positive = "1"), rate=0.5),
+  makeClassifTask(id="SocialSpamEth", data=cresci_and_eth, target = "is_bot", positive = "1"),
+  undersample(makeClassifTask(id="SocialSpamEthDownSampled", data=cresci_and_eth, target = "is_bot", positive = "1"), rate=.33)
+)
+
+lrns <- list(
+  makeLearner("classif.ada", id = "ada", predict.type="prob"), 
+  makeLearner("classif.logreg", id ="logisticRegression", predict.type="prob"), 
+  makeLearner("classif.rpart", id = "rpart", predict.type="prob"),
+  makeLearner("classif.randomForest", id = "randomForest", predict.type="prob"),
+  makeLearner("classif.naiveBayes", id = "naiveBayes", predict.type="prob")
+)
+rdesc <- makeResampleDesc("CV", iters = 10)
+meas <- list(acc, auc, ppv, f1, kappa, tpr, brier, timetrain)
+bmr <- benchmark(lrns, tasks, rdesc, meas)
+models <- getBMRModels(bmr)
+stopCluster(cl
+```
