@@ -23,6 +23,8 @@ DEFAULT_CRAWL_DEGREE = 1
 DEFAULT_MAX_CONNECTIONS = 25000
 
 Base = declarative_base()
+
+
 class Node(Base):
     """A class representing a node in a graph.
     """
@@ -32,6 +34,7 @@ class Node(Base):
     id = Column(BigInteger, primary_key=True)
     screen_name = Column(String(255))
 
+
 class Edge(Base):
     """A class representing a directed edge in a graph.
     """
@@ -40,6 +43,7 @@ class Edge(Base):
     id = Column(Integer, primary_key=True)
     source = Column(String(255))
     target = Column(String(255))
+
 
 def lookup_users(api, user_ids):
     results = []
@@ -149,16 +153,19 @@ def write_graph(session, graph_filename):
             "<?xml version='1.0' encoding='utf-8'?>"
             "<gexf version=\"1.2\" xmlns=\"http://www.gexf.net/1.2draft\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://www.w3.org/2001/XMLSchema-instance\">"
             "<graph defaultedgetype=\"directed\" mode=\"static\" name=\"\">\n")
-        
+
         # Write the nodes
         graph_file.write('<nodes>\n')
-        for node in session.query(Node):
-            graph_file.write('<node id="{}" label="{}" />\n'.format(node.screen_name, node.screen_name))
+        for node in session.query(Node).yield_per(1000):
+            graph_file.write('<node id="{}" label="{}" />\n'.format(
+                node.screen_name, node.screen_name))
         graph_file.write('</nodes>\n')
 
         graph_file.write('<edges>\n')
-        for edge in session.query(Edge):
-            graph_file.write('<edge id="{}" source="{}" target="{}" />\n'.format(edge.id, edge.source, edge.target))
+        for edge in session.query(Edge).yield_per(1000):
+            graph_file.write(
+                '<edge id="{}" source="{}" target="{}" />\n'.format(
+                    edge.id, edge.source, edge.target))
         graph_file.write('</edges>\n')
         graph_file.write('</graph>\n')
         graph_file.write('</gexf>\n')
@@ -175,6 +182,7 @@ def add_node(session, id, screen_name):
     if not session.query(Node).get(id):
         session.add(Node(id=id, screen_name=screen_name))
         session.commit()
+
 
 def add_edge(session, source, target):
     """Adds a new edge to the database
@@ -205,7 +213,7 @@ def main():
 
     api = tweepy.API(
         user_auth, wait_on_rate_limit_notify=True, wait_on_rate_limit=True)
-    
+
     # Set up the database
     database_path = '{}.db'.format(args.user)
     engine = create_engine('sqlite:///{}'.format(database_path))
