@@ -5,9 +5,10 @@ import logging
 import argparse
 import sys
 
-from sqlalchemy import (create_engine, Column, String, BigInteger, Integer)
+from sqlalchemy import (create_engine, Column, String, BigInteger, Integer,
+                        Boolean, ForeignKey)
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, scoped_session
+from sqlalchemy.orm import sessionmaker, scoped_session, relationship, aliased
 
 from manager.streamer import JSONStreamer
 
@@ -28,21 +29,23 @@ Base = declarative_base()
 class Node(Base):
     """A class representing a node in a graph.
     """
-
     __tablename__ = 'nodes'
-
     id = Column(BigInteger, primary_key=True)
     screen_name = Column(String(255))
+    is_root = Column(Boolean)
 
 
 class Edge(Base):
     """A class representing a directed edge in a graph.
     """
-
     __tablename__ = 'edges'
     id = Column(Integer, primary_key=True)
-    source = Column(String(255))
-    target = Column(String(255))
+    source_id = Column(Integer, ForeignKey('nodes.id'))
+    target_id = Column(Integer, ForeignKey('nodes.id'))
+    source = relationship(
+        Node, primaryjoin=source_id == Node.id, backref="friends")
+    target = relationship(
+        Node, primaryjoin=target_id == Node.id, backref="followers")
 
 
 def lookup_users(api, user_ids):
@@ -137,62 +140,93 @@ def parse_args():
         type=int,
         help='Max number of connections per account to crawl',
         default=DEFAULT_MAX_CONNECTIONS)
+    parser.add_argument(
+        '--root-connections',
+        '-rc',
+        help='Only track connections connected to the original user',
+        default=False,
+        action='store_true')
     return parser.parse_args()
 
 
-def write_graph(session, graph_filename):
+def write_graph(session, args):
     """Writes the entries in the database to a GEXF file
-    
+
     Arguments:
         session {sqlalchemy.orm.Session} -- The database session
         graph_filename {str} -- The filename to write the graph to
     """
 
-    with open(graph_filename, 'w') as graph_file:
-        graph_file.write(
+    with open(args.graph_file, 'w') as graph:
+        graph.write(
             "<?xml version='1.0' encoding='utf-8'?>"
             "<gexf version=\"1.2\" xmlns=\"http://www.gexf.net/1.2draft\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://www.w3.org/2001/XMLSchema-instance\">"
             "<graph defaultedgetype=\"directed\" mode=\"static\" name=\"\">\n")
 
         # Write the nodes
-        graph_file.write('<nodes>\n')
+        graph.write('<nodes>\n')
         for node in session.query(Node).yield_per(1000):
-            graph_file.write('<node id="{}" label="{}" />\n'.format(
+            graph.write('<node id="{}" label="{}" />\n'.format(
                 node.screen_name, node.screen_name))
-        graph_file.write('</nodes>\n')
+        graph.write('</nodes>\n')
 
-        graph_file.write('<edges>\n')
-        for edge in session.query(Edge).yield_per(1000):
-            graph_file.write(
-                '<edge id="{}" source="{}" target="{}" />\n'.format(
-                    edge.id, edge.source, edge.target))
-        graph_file.write('</edges>\n')
-        graph_file.write('</graph>\n')
-        graph_file.write('</gexf>\n')
+        graph.write('<edges>\n')
+
+        query = session.query(Edge)
+        for edge in query.yield_per(1000):
+            graph.write('<edge id="{}" source="{}" target="{}" />\n'.format(
+                edge.id, edge.source.screen_name, edge.target.screen_name))
+        graph.write('</edges>\n')
+        graph.write('</graph>\n')
+        graph.write('</gexf>\n')
 
 
-def add_node(session, id, screen_name):
+def add_node(session, id, screen_name, args, is_root=False):
     """Adds a new node to the database
-    
+
     Arguments:
         session {sqlalchemy.orm.Session} -- The database session
         id {int} -- The Twitter account ID
         screen_name {str} -- The Twitter screen name
+        is_root {bool} -- Whether or not this is a root connection
     """
-    if not session.query(Node).get(id):
-        session.add(Node(id=id, screen_name=screen_name))
-        session.commit()
+    node = session.query(Node).get(id)
+    if not node:
+        node = Node(id=id, screen_name=screen_name, is_root=is_root)
+        # If we only care about root connections, and this isn't one of them,
+        # then we can avoid adding it to the database since it won't have an
+        # edge anyway.
+        if args.root_connections and not is_root:
+            session.commit()
+            return node
+        session.add(node)
+    session.commit()
+    return node
 
 
-def add_edge(session, source, target):
+def add_edge(session, source, target, args):
     """Adds a new edge to the database
-    
+
     Arguments:
         session {sqlalchemy.orm.Session} -- The database session
-        source {str} -- The source Twitter screen name
-        target {str} -- The target Twitter screen name
+        source {Node} -- The source node for the edge
+        target {Node} -- The target node for the edge
+        args {argparse.Arguments} -- The command line arguments provided
     """
-    session.add(Edge(source=source, target=target))
+    # Check if this edge already exists
+    edge = session.query(Edge).filter(Edge.source_id == source.id,
+                                      Edge.target_id == target.id).first()
+    if edge:
+        session.commit()
+        return
+
+    # Otherwise, create and return a new edge
+    if args.root_connections and (source.is_root and target.is_root):
+        edge = Edge(source=source, target=target)
+        session.add(edge)
+    elif not args.root_connections:
+        edge = Edge(source=source, target=target)
+        session.add(edge)
     session.commit()
 
 
@@ -240,7 +274,6 @@ def main():
     try:
         while not crawl_queue.empty():
             degree, account = crawl_queue.get()
-            crawl_queue
             degree += 1
             current_count += 1
             screen_name = account['screen_name']
@@ -248,25 +281,39 @@ def main():
                 'Fetching network for: {} (current count: {} queue size: {})'.
                 format(screen_name, current_count, crawl_queue.qsize()))
 
-            friends = get_friends(
+            account['friends'] = get_friends(
                 api, screen_name, max_connections=args.max_connections)
-            account['friends'] = friends
             logger.info('\tFound {} friends for {}'.format(
-                len(friends), screen_name))
+                len(account['friends']), screen_name))
 
-            followers = get_followers(
+            account['followers'] = get_followers(
                 api, screen_name, max_connections=args.max_connections)
             logger.info('\tFound {} followers for {}'.format(
-                len(followers), screen_name))
-            account['followers'] = followers
+                len(account['followers']), screen_name))
 
             streamer.write_row(account)
+            streamer.flush()
 
-            add_node(session, account['id'], account['screen_name'])
+            is_root = False
+            if degree == 1:
+                is_root = True
 
-            for friend in friends:
-                add_node(session, friend['id'], friend['screen_name'])
-                add_edge(session, screen_name, friend['screen_name'])
+            # Get or create the node for the account we're crawling
+            account_node = add_node(
+                session,
+                account['id'],
+                account['screen_name'],
+                args,
+                is_root=is_root)
+
+            for friend in account['friends']:
+                friend_node = add_node(
+                    session,
+                    friend['id'],
+                    friend['screen_name'],
+                    args,
+                    is_root=is_root)
+                add_edge(session, account_node, friend_node, args)
                 if degree > args.degree:
                     continue
                 if friend['id'] in seen_accounts:
@@ -274,9 +321,14 @@ def main():
                 seen_accounts[friend['id']] = True
                 crawl_queue.put_nowait((degree, friend))
 
-            for follower in followers:
-                add_node(session, follower['id'], follower['screen_name'])
-                add_edge(session, follower['screen_name'], screen_name)
+            for follower in account['followers']:
+                follower_node = add_node(
+                    session,
+                    follower['id'],
+                    follower['screen_name'],
+                    args,
+                    is_root=is_root)
+                add_edge(session, follower_node, account_node, args)
                 if degree > args.degree:
                     continue
                 if follower['id'] in seen_accounts:
@@ -284,10 +336,16 @@ def main():
                 seen_accounts[follower['id']] = True
                 crawl_queue.put_nowait((degree, follower))
 
+            # I can't explain why these cause a memory leak if they aren't
+            # explicitly pop'd. References to `account` should be removed
+            # on the next iteration, but that doesn't appear to happen.
+            account.pop('friends')
+            account.pop('followers')
+
     except KeyboardInterrupt:
         print('CTRL+C received... shutting down')
 
-    write_graph(session, args.graph_file)
+    write_graph(session, args)
     os.remove(database_path)
 
     streamer.close()
