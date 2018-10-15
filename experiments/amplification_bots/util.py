@@ -1,10 +1,13 @@
+import math
+
+
 # https://medium.com/@ssbothwell/counting-inversions-with-merge-sort-4d9910dc95f0
 def merge_sort_inversions(arr):
     if len(arr) == 1:
         return arr, 0
     else:
-        a = arr[:len(arr)/2]
-        b = arr[len(arr)/2:]
+        a = arr[:math.floor(len(arr)/2)]
+        b = arr[math.floor(len(arr)/2):]
         a, ai = merge_sort_inversions(a)
         b, bi = merge_sort_inversions(b)
         c = []

@@ -22,7 +22,7 @@ class TweetNode(Base):
     """
     __tablename__ = 'tweets'
     id = Column(BigInteger, primary_key=True)
-    account_id = Column(BigInteger, primary_key=True)
+    account_id = Column(BigInteger)
     screen_name = Column(String(255))
     text = Column(String)
     date_crawled = Column(DateTime)
@@ -139,7 +139,6 @@ def get_tweets(api, account_id):
 
 def get_retweeters(api, tweet_id):
     retweeters = []
-    retweets = []
 
     try:
         logger.info('Getting retweets of tweet {}'.format(tweet_id))
@@ -158,6 +157,9 @@ def is_retweet_bot(api, account_id):
     tweets = get_tweets(api, account_id)
     retweets = get_retweeted_statuses(tweets)
 
+    if len(tweets) == 0 or len(retweets) == 0:
+        return False
+
     perc_retweets = len(retweets) / len(tweets)
 
     if perc_retweets < 0.9:
@@ -167,7 +169,7 @@ def is_retweet_bot(api, account_id):
 
     perc_amplified_tweets = len(amplified_tweets) / len(retweets)
 
-    if perc_amplified_tweets < .5:
+    if perc_amplified_tweets < (1/3):
         return False
 
     tweet_times = []
@@ -177,11 +179,11 @@ def is_retweet_bot(api, account_id):
         create_at_dt = datetime.strptime(created_at_str, "%a %b %d %H:%M:%S %z %Y")
         tweet_times.append(create_at_dt)
 
-    num_inversions = merge_sort_inversions(tweet_times)
+    _, num_inversions = merge_sort_inversions(tweet_times)
 
     relative_inv = num_inversions / len(tweets)
 
-    if relative_inv < .4:
+    if relative_inv < 33:
         return False
 
     return True
@@ -295,7 +297,7 @@ def main():
                     if retweeter_id in accounts_seen:
                         continue
                     accounts_seen.add(retweeter_id)
-                    crawler.add(retweeter_id)
+                    crawler.put(retweeter_id)
 
     except KeyboardInterrupt:
         print('CTRL+C received... shutting down')
