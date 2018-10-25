@@ -144,7 +144,8 @@ def get_retweeters(api, tweet_id):
         logger.info('Getting retweets of tweet {}'.format(tweet_id))
         retweets = api.retweets(tweet_id)
     except Exception as e:
-        raise e
+        logger.warning('Tweet {} was not returned'.format(tweet_id))
+        retweets = []
 
     if retweets:
         for retweet in retweets:
@@ -183,7 +184,7 @@ def is_retweet_bot(api, account_id):
 
     relative_inv = num_inversions / len(tweets)
 
-    if relative_inv < 33:
+    if relative_inv < 100:
         return False
 
     return True
@@ -224,7 +225,7 @@ def get_rt_like_ratio(tweet):
 
 
 def is_amplified_tweet(tweet):
-    return get_rt_like_ratio(tweet) >= 5
+    return get_rt_like_ratio(tweet) >= 5 and tweet['retweet_count'] >= 50
 
 
 def parse_args():
@@ -268,13 +269,12 @@ def main():
         crawler = Queue()
         crawler.put(args.seed_acount)
         accounts_seen = set()
-        num_tweets = 10
         while not crawler.empty():
             account_id = crawler.get()
             tweets = get_tweets(app_api, account_id)
             tweet_crawl_date = datetime.utcnow()
             prioritized_list = process_tweets(tweets)
-            for item in prioritized_list[0:num_tweets]:
+            for item in prioritized_list:
                 tweet = item[1]
                 author = tweet['user']
                 logger.info('Found {} amplified tweets from {}'.format(
