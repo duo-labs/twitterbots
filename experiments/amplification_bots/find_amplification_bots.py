@@ -180,11 +180,11 @@ def is_retweet_bot(api, account_id):
         create_at_dt = datetime.strptime(created_at_str, "%a %b %d %H:%M:%S %z %Y")
         tweet_times.append(create_at_dt)
 
+    tweet_times.reverse()
+
     _, num_inversions = merge_sort_inversions(tweet_times)
 
-    relative_inv = num_inversions / len(tweets)
-
-    if relative_inv < 100:
+    if num_inversions < 100:
         return False
 
     return True
