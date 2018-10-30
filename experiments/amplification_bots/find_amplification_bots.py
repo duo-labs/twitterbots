@@ -176,7 +176,10 @@ def is_retweet_bot(api, account_id):
     tweet_times = []
 
     for tweet in tweets:
-        created_at_str = tweet['created_at']
+        if 'retweeted_status' in tweet:
+            created_at_str = tweet['retweeted_status']['created_at']
+        else:
+            created_at_str = tweet['created_at']
         create_at_dt = datetime.strptime(created_at_str, "%a %b %d %H:%M:%S %z %Y")
         tweet_times.append(create_at_dt)
 
