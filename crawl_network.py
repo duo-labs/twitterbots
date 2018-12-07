@@ -6,9 +6,10 @@ import argparse
 import sys
 
 from sqlalchemy import (create_engine, Column, String, BigInteger, Integer,
-                        Boolean, ForeignKey)
+                        Boolean, ForeignKey, DateTime)
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, scoped_session, relationship, aliased
+from sqlalchemy.orm import sessionmaker, scoped_session, relationship
+from datetime import datetime
 
 from manager.streamer import JSONStreamer
 
@@ -33,6 +34,7 @@ class Node(Base):
     id = Column(BigInteger, primary_key=True)
     screen_name = Column(String(255))
     is_root = Column(Boolean)
+    created_date = Column(DateTime, default=datetime.now)
 
 
 class Edge(Base):
@@ -46,6 +48,7 @@ class Edge(Base):
         Node, primaryjoin=source_id == Node.id, backref="friends")
     target = relationship(
         Node, primaryjoin=target_id == Node.id, backref="followers")
+    created_date = Column(DateTime, default=datetime.now)
 
 
 def lookup_users(api, user_ids):
@@ -146,6 +149,11 @@ def parse_args():
         help='Only track connections connected to the original user',
         default=False,
         action='store_true')
+    parser.add_argument(
+        '--dynamic',
+        help='Store the results as a dynamic graph instead of a static graph',
+        default=False,
+        action='store_true')
     return parser.parse_args()
 
 
@@ -158,24 +166,31 @@ def write_graph(session, args):
     """
 
     with open(args.graph_file, 'w') as graph:
+        graph_mode = 'mode="static"'
+        if args.dynamic:
+            graph_mode = 'mode="dynamic" timeformat="dateTime"'
         graph.write(
             "<?xml version='1.0' encoding='utf-8'?>"
             "<gexf version=\"1.2\" xmlns=\"http://www.gexf.net/1.2draft\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://www.w3.org/2001/XMLSchema-instance\">"
-            "<graph defaultedgetype=\"directed\" mode=\"static\" name=\"\">\n")
+            "<graph defaultedgetype=\"directed\" {} name=\"\">\n".format(
+                graph_mode))
 
         # Write the nodes
         graph.write('<nodes>\n')
         for node in session.query(Node).yield_per(1000):
-            graph.write('<node id="{}" label="{}" />\n'.format(
-                node.screen_name, node.screen_name))
+            graph.write('<node id="{}" label="{}" start="{}"/>\n'.format(
+                node.screen_name, node.screen_name,
+                node.created_date.strftime('%Y-%m-%dT%H:%M:%S')))
         graph.write('</nodes>\n')
 
         graph.write('<edges>\n')
 
         query = session.query(Edge)
         for edge in query.yield_per(1000):
-            graph.write('<edge id="{}" source="{}" target="{}" />\n'.format(
-                edge.id, edge.source.screen_name, edge.target.screen_name))
+            graph.write(
+                '<edge id="{}" source="{}" target="{}" start="{}"/>\n'.format(
+                    edge.id, edge.source.screen_name, edge.target.screen_name,
+                    edge.created_date.strftime('%Y-%m-%dT%H:%M:%S')))
         graph.write('</edges>\n')
         graph.write('</graph>\n')
         graph.write('</gexf>\n')
