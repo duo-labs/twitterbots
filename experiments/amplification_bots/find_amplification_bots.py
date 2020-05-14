@@ -128,7 +128,7 @@ def get_tweets(api, account_id):
         tweets_response = api.user_timeline(user_id=account_id, count=200)
         tweets = [tweet._json for tweet in tweets_response]
     except TweepError as e:
-        if str(e) == 'Note authorized.':
+        if str(e) == 'Not authorized.':
             logger.info('Found suspended account: {}'.format(
                 account_id))
     except Exception as e:
